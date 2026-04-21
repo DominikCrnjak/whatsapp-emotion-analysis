@@ -19,7 +19,9 @@ from visualization_module import (
     load_result_csv,
     create_pie_chart,
     create_bar_chart,
-    create_timeline_chart
+    create_timeline_chart,
+    create_score_histogram,
+    create_speaker_comparison
 )
 
 # Usporedba modela
