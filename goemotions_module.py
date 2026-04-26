@@ -135,6 +135,49 @@ EKMAN_MAP = {
 }
 
 # =====================================================
+# VAD MAP (0-1 scale)
+# Theoretical base:
+# Russell Circumplex + PAD model + Warriner lexicon inspired
+# =====================================================
+
+VAD_MAP = {
+    "anger": (0.15, 0.82, 0.72),
+    "annoyance": (0.28, 0.62, 0.55),
+    "disapproval": (0.25, 0.50, 0.45),
+    "disgust": (0.10, 0.72, 0.48),
+
+    "fear": (0.10, 0.90, 0.18),
+    "nervousness": (0.22, 0.82, 0.25),
+
+    "sadness": (0.18, 0.35, 0.18),
+    "grief": (0.05, 0.28, 0.08),
+    "disappointment": (0.25, 0.38, 0.28),
+    "remorse": (0.22, 0.42, 0.22),
+    "embarrassment": (0.35, 0.58, 0.30),
+
+    "confusion": (0.42, 0.52, 0.32),
+    "realization": (0.52, 0.42, 0.48),
+    "surprise": (0.55, 0.76, 0.50),
+
+    "neutral": (0.50, 0.10, 0.50),
+
+    "curiosity": (0.68, 0.52, 0.45),
+    "desire": (0.72, 0.62, 0.62),
+    "approval": (0.72, 0.35, 0.55),
+    "admiration": (0.82, 0.58, 0.66),
+    "gratitude": (0.88, 0.48, 0.62),
+    "joy": (0.92, 0.72, 0.66),
+    "amusement": (0.86, 0.78, 0.62),
+    "love": (0.96, 0.62, 0.72),
+    "optimism": (0.84, 0.55, 0.62),
+    "pride": (0.86, 0.64, 0.82),
+    "relief": (0.78, 0.32, 0.56),
+    "excitement": (0.92, 0.92, 0.76),
+    "caring": (0.80, 0.42, 0.52)
+}
+
+
+# =====================================================
 # MODEL CACHE
 # =====================================================
 
@@ -268,6 +311,33 @@ def map_to_ekman(preds: List[Dict]):
     return dict(scores)
 
 
+def compute_vad_scores(preds):
+    v_sum = 0
+    a_sum = 0
+    d_sum = 0
+    total = 0
+
+    for p in preds:
+        label = p["label"]
+        weight = p["score"]
+
+        v, a, d = VAD_MAP.get(label, (0.5, 0.5, 0.5))
+
+        v_sum += v * weight
+        a_sum += a * weight
+        d_sum += d * weight
+        total += weight
+
+    if total == 0:
+        return (0.5, 0.5, 0.5)
+
+    return (
+        v_sum / total,
+        a_sum / total,
+        d_sum / total
+    )
+
+
 # =====================================================
 # PREDICTION MODES
 # =====================================================
@@ -293,12 +363,17 @@ def predict_full(preds: List[Dict]):
 
     cont = compute_continuous_score(used)
 
+    v, a, d = compute_vad_scores(used)
+
     return {
         "predicted_emotion": top["label"],
         "emotion_score": top["score"],
         "used_emotions": used_text,
         "continuous_score": cont,
-        "sentiment_group": score_group(cont)
+        "sentiment_group": score_group(cont),
+        "vad_valence": v,
+        "vad_arousal": a,
+        "vad_dominance": d
     }
 
 
@@ -340,12 +415,18 @@ def predict_ekman(preds: List[Dict]):
             for k, v in mapped.items()
         ) / total
 
+    pseudo_preds = [{"label":k, "score":v} for k,v in mapped.items()]
+    v, a, d = compute_vad_scores(pseudo_preds)
+
     return {
         "predicted_emotion": best_label,
         "emotion_score": best_score,
         "used_emotions": used_text,
         "continuous_score": cont,
-        "sentiment_group": score_group(cont)
+        "sentiment_group": score_group(cont),
+        "vad_valence": v,
+        "vad_arousal": a,
+        "vad_dominance": d
     }
 
 
@@ -383,6 +464,9 @@ def run_goemotions_analysis(
     final_used = []
     final_cont = []
     final_groups = []
+    final_v = []
+    final_a = []
+    final_d = []
 
     for preds in predictions:
 
@@ -396,6 +480,9 @@ def run_goemotions_analysis(
         final_used.append(result["used_emotions"])
         final_cont.append(result["continuous_score"])
         final_groups.append(result["sentiment_group"])
+        final_v.append(result["vad_valence"])
+        final_a.append(result["vad_arousal"])
+        final_d.append(result["vad_dominance"])
 
     df["predicted_emotion"] = final_labels
     df["emotion_score"] = final_scores
@@ -404,6 +491,9 @@ def run_goemotions_analysis(
     df["sentiment_group"] = final_groups
     df["model_name"] = "goemotions"
     df["model_mode"] = mode
+    df["vad_valence"] = final_v
+    df["vad_arousal"] = final_a
+    df["vad_dominance"] = final_d
 
     if output_csv:
         Path(output_csv).parent.mkdir(
