@@ -9,6 +9,7 @@ Podržano:
 3. Emotional timeline po vremenu i govorniku
 4. Continuous score histogram
 5. Speaker sentiment comparison
+6. 3D VAD emotional space
 
 Radi za:
 - GoEmotions CSV
@@ -19,6 +20,9 @@ Radi za:
 Ako CSV već sadrži:
     continuous_score
     sentiment_group
+    vad_valence
+    vad_arousal
+    vad_dominance
 
 onda koristi postojeće vrijednosti.
 
@@ -99,15 +103,10 @@ def score_group(score):
 
 
 # =====================================================
-# ENSURE CONTINUOUS SCORE
+# ENSURE SCORES
 # =====================================================
 
 def ensure_scores(df):
-    """
-    Ako CSV već ima continuous_score koristi njega.
-    Inače radi fallback preko predicted_emotion.
-    """
-
     df = df.copy()
 
     if "continuous_score" not in df.columns:
@@ -128,12 +127,7 @@ def ensure_scores(df):
 # =====================================================
 
 def create_pie_chart(df):
-    counts = (
-        df["predicted_emotion"]
-        .value_counts()
-        .reset_index()
-    )
-
+    counts = df["predicted_emotion"].value_counts().reset_index()
     counts.columns = ["emotion", "count"]
 
     fig = px.pie(
@@ -157,12 +151,7 @@ def create_pie_chart(df):
 # =====================================================
 
 def create_bar_chart(df):
-    counts = (
-        df["predicted_emotion"]
-        .value_counts()
-        .reset_index()
-    )
-
+    counts = df["predicted_emotion"].value_counts().reset_index()
     counts.columns = ["emotion", "count"]
 
     fig = px.bar(
@@ -235,14 +224,10 @@ def create_speaker_comparison(df):
 
 
 # =====================================================
-# MAIN TIMELINE
+# TIMELINE
 # =====================================================
 
 def create_timeline_chart(df):
-    """
-    Koristi pravi continuous_score iz modela.
-    """
-
     df = ensure_scores(df)
 
     if "speaker" not in df.columns:
@@ -272,7 +257,6 @@ def create_timeline_chart(df):
 
     fig = go.Figure()
 
-    # background zones
     fig.add_hrect(y0=-1.0, y1=-0.60, fillcolor="rgba(255,215,215,0.35)", line_width=0)
     fig.add_hrect(y0=-0.60, y1=-0.20, fillcolor="rgba(255,235,220,0.28)", line_width=0)
     fig.add_hrect(y0=-0.20, y1=0.20, fillcolor="rgba(235,238,242,0.30)", line_width=0)
@@ -282,11 +266,6 @@ def create_timeline_chart(df):
     for speaker in speakers:
 
         sdf = df[df["speaker"] == speaker].copy()
-
-        hover_cols = ["predicted_emotion"]
-
-        if "emotion_score" in sdf.columns:
-            hover_cols.append("emotion_score")
 
         fig.add_trace(
             go.Scatter(
@@ -304,16 +283,13 @@ def create_timeline_chart(df):
 
                 marker=dict(
                     size=10,
-                    color=[
-                        marker_colors[g]
-                        for g in sdf["sentiment_group"]
-                    ],
+                    color=[marker_colors[g] for g in sdf["sentiment_group"]],
                     line=dict(color="white", width=1.3)
                 ),
 
                 text=sdf["text"],
 
-                customdata=sdf[hover_cols],
+                customdata=sdf[["predicted_emotion"]],
 
                 hovertemplate=(
                     "<b>Govornik:</b> " + speaker + "<br>"
@@ -345,6 +321,492 @@ def create_timeline_chart(df):
             "pozitivno",
             "jako pozitivno"
         ]
+    )
+
+    return fig
+
+
+# =====================================================
+# 3D VAD GRAPH
+# =====================================================
+
+def create_vad_3d_chart(df):
+    """
+    3D Emotional Space:
+    X = Valence
+    Y = Arousal
+    Z = Dominance
+    """
+
+    required = [
+        "vad_valence",
+        "vad_arousal",
+        "vad_dominance"
+    ]
+
+    for col in required:
+        if col not in df.columns:
+            return go.Figure()
+
+    df = ensure_scores(df)
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter3d(
+            x=df["vad_valence"],
+            y=df["vad_arousal"],
+            z=df["vad_dominance"],
+
+            mode="markers+lines",
+
+            marker=dict(
+                size=6,
+                color=df["continuous_score"],
+                colorscale="RdYlGn",
+                cmin=-1,
+                cmax=1,
+                colorbar=dict(title="Emotion")
+            ),
+
+            line=dict(
+                width=2,
+                color="rgba(120,120,120,0.35)"
+            ),
+
+            text=[
+                f"{row.text}<br>"
+                f"<b>Emotion:</b> {row.predicted_emotion}<br>"
+                f"<b>Score:</b> {row.continuous_score:.2f}<br>"
+                f"<b>V:</b> {row.vad_valence:.2f}<br>"
+                f"<b>A:</b> {row.vad_arousal:.2f}<br>"
+                f"<b>D:</b> {row.vad_dominance:.2f}"
+                for _, row in df.iterrows()
+            ],
+
+            hovertemplate="%{text}<extra></extra>"
+        )
+    )
+
+    fig.update_layout(
+        title="3D Emotional Space (VAD)",
+        height=800,
+
+        scene=dict(
+            xaxis_title="Valence",
+            yaxis_title="Arousal",
+            zaxis_title="Dominance",
+
+            xaxis=dict(range=[0, 1]),
+            yaxis=dict(range=[0, 1]),
+            zaxis=dict(range=[0, 1]),
+        )
+    )
+
+    return fig
+
+# =====================================================
+# SANKEY EMOTION FLOW
+# Dodaj u visualization_module.py
+# =====================================================
+
+from collections import Counter
+import plotly.graph_objects as go
+
+
+def create_emotion_sankey(df):
+    """
+    Sankey dijagram prijelaza emocija između poruka.
+
+    Koristi:
+        predicted_emotion
+
+    Opcionalno:
+        continuous_score
+        speaker
+        datetime
+
+    Ideja:
+    prethodna emocija -> sljedeća emocija
+
+    Vizualno:
+    pozitivne emocije gore
+    negativne dolje
+    """
+
+    if "predicted_emotion" not in df.columns:
+        return go.Figure()
+
+    data = df.copy()
+
+    # =================================================
+    # CLEAN
+    # =================================================
+
+    data = data.dropna(subset=["predicted_emotion"])
+
+    if len(data) < 2:
+        return go.Figure()
+
+    emotion_sequence = data["predicted_emotion"].astype(str).tolist()
+
+    # =================================================
+    # SORT PO VALENCIJI
+    # =================================================
+
+    emotions_present = sorted(
+        list(set(emotion_sequence)),
+        key=lambda x: EMOTION_VALENCE.get(x, 0),
+        reverse=True
+    )
+
+    # =================================================
+    # COLOR FUNCTION
+    # =================================================
+
+    def emotion_color(emotion):
+
+        val = EMOTION_VALENCE.get(emotion, 0)
+
+        # negative = red
+        if val < 0:
+            strength = min(abs(val), 1)
+            r = 220
+            g = int(220 * (1 - strength))
+            b = int(220 * (1 - strength))
+            return f"rgba({r},{g},{b},0.85)"
+
+        # positive = green
+        elif val > 0:
+            strength = min(val, 1)
+            r = int(220 * (1 - strength))
+            g = 180 + int(75 * strength)
+            b = int(220 * (1 - strength))
+            return f"rgba({r},{g},{b},0.85)"
+
+        # neutral
+        else:
+            return "rgba(240,200,50,0.85)"
+
+    # =================================================
+    # NODES
+    # =================================================
+
+    n = len(emotions_present)
+
+    source_map = {
+        emotion: i
+        for i, emotion in enumerate(emotions_present)
+    }
+
+    target_map = {
+        emotion: i + n
+        for i, emotion in enumerate(emotions_present)
+    }
+
+    labels = emotions_present + emotions_present
+    node_colors = (
+        [emotion_color(e) for e in emotions_present] +
+        [emotion_color(e) for e in emotions_present]
+    )
+
+    # =================================================
+    # TRANSITIONS
+    # =================================================
+
+    transition_counts = Counter()
+
+    for i in range(len(emotion_sequence) - 1):
+
+        src = emotion_sequence[i]
+        tgt = emotion_sequence[i + 1]
+
+        transition_counts[(src, tgt)] += 1
+
+    sources = []
+    targets = []
+    values = []
+    link_colors = []
+
+    for (src, tgt), count in transition_counts.items():
+
+        sources.append(source_map[src])
+        targets.append(target_map[tgt])
+        values.append(count)
+
+        base = emotion_color(src)
+        link = (
+            base
+            .replace("0.85", "0.28")
+            .replace("0.9", "0.28")
+        )
+
+        link_colors.append(link)
+
+    # =================================================
+    # FIGURE
+    # =================================================
+
+    fig = go.Figure(
+        go.Sankey(
+
+            arrangement="snap",
+
+            node=dict(
+                pad=25,
+                thickness=26,
+                line=dict(
+                    color="rgba(0,0,0,0.20)",
+                    width=0.5
+                ),
+                label=labels,
+                color=node_colors
+            ),
+
+            link=dict(
+                source=sources,
+                target=targets,
+                value=values,
+                color=link_colors
+            )
+        )
+    )
+
+    # =================================================
+    # LAYOUT
+    # =================================================
+
+    fig.update_layout(
+
+    title={
+        "text": "Tok emocija između uzastopnih poruka",
+        "x": 0.5,
+        "xanchor": "center",
+        "font": dict(size=22, color="white")
+    },
+
+    font=dict(
+        size=13,
+        color="white"
+    ),
+
+    paper_bgcolor="#0f172a",   # vanjska pozadina
+    plot_bgcolor="#0f172a",    # unutarnja pozadina
+
+    margin=dict(l=20, r=20, t=70, b=20),
+
+    annotations=[
+        dict(
+            x=0.01,
+            y=1.05,
+            text="Prethodna emocija",
+            showarrow=False,
+            font=dict(size=14, color="#cbd5e1")
+        ),
+        dict(
+            x=0.99,
+            y=1.05,
+            text="Sljedeća emocija",
+            showarrow=False,
+            font=dict(size=14, color="#cbd5e1")
+        )
+    ]
+)
+
+    return fig
+
+# =====================================================
+# INFLUENCE TIMELINE
+# =====================================================
+
+def create_influence_timeline(df):
+    """
+    Emotional influence između sudionika.
+
+    Mjeri kako poruka jednog govornika utječe na sljedeći odgovor drugoga.
+
+    Delta =
+        score(odgovor druge osobe)
+        -
+        prethodni poznati score te osobe
+
+    Pozitivno = popravio raspoloženje
+    Negativno = pogoršao raspoloženje
+    """
+
+    df = ensure_scores(df).copy()
+
+    if "speaker" not in df.columns:
+        return go.Figure()
+
+    if "datetime" in df.columns:
+        df = df.sort_values("datetime").reset_index(drop=True)
+
+    speakers = list(df["speaker"].dropna().unique())
+
+    if len(speakers) < 2:
+        return go.Figure()
+
+    # samo prva dva sudionika
+    s1 = speakers[0]
+    s2 = speakers[1]
+
+    directions = [
+        (s1, s2),
+        (s2, s1)
+    ]
+
+    fig = go.Figure()
+
+    traces_per_direction = {}
+
+    trace_index = 0
+
+    for sender, receiver in directions:
+
+        rows = []
+        prev_receiver_score = None
+
+        for i in range(len(df) - 1):
+
+            row = df.iloc[i]
+            nxt = df.iloc[i + 1]
+
+            # sender -> receiver prijelaz
+            if row["speaker"] == sender and nxt["speaker"] == receiver:
+
+                current_score = nxt["continuous_score"]
+
+                if prev_receiver_score is None:
+                    delta = 0.0
+                else:
+                    delta = current_score - prev_receiver_score
+
+                rows.append({
+                    "time": nxt["datetime"],
+                    "delta": delta,
+                    "trigger_text": row["text"],
+                    "response_text": nxt["text"],
+                    "sender_score": row["continuous_score"],
+                    "receiver_score": current_score
+                })
+
+                prev_receiver_score = current_score
+
+        rdf = pd.DataFrame(rows)
+
+        if len(rdf) == 0:
+            continue
+
+        color_list = [
+            "#22c55e" if x > 0.05 else
+            "#ef4444" if x < -0.05 else
+            "#94a3b8"
+            for x in rdf["delta"]
+        ]
+
+        fig.add_trace(
+            go.Bar(
+                x=rdf["time"],
+                y=rdf["delta"],
+                visible=(trace_index == 0),
+                name=f"{sender} → {receiver}",
+
+                marker=dict(
+                    color=color_list
+                ),
+
+                customdata=list(zip(
+                    rdf["trigger_text"],
+                    rdf["response_text"],
+                    rdf["sender_score"],
+                    rdf["receiver_score"]
+                )),
+
+                hovertemplate=
+                    "<b>Smjer:</b> " + sender + " → " + receiver + "<br>" +
+                    "<b>Vrijeme:</b> %{x}<br>" +
+                    "<b>Promjena:</b> %{y:.3f}<br><br>" +
+                    "<b>Trigger poruka:</b><br>%{customdata[0]}<br><br>" +
+                    "<b>Odgovor:</b><br>%{customdata[1]}<br><br>" +
+                    "<b>Score sender:</b> %{customdata[2]:.3f}<br>" +
+                    "<b>Score receiver:</b> %{customdata[3]:.3f}<extra></extra>"
+            )
+        )
+
+        traces_per_direction[f"{sender} → {receiver}"] = trace_index
+        trace_index += 1
+
+    if trace_index == 0:
+        return go.Figure()
+
+    buttons = []
+
+    for label, idx in traces_per_direction.items():
+
+        visible = [False] * trace_index
+        visible[idx] = True
+
+        buttons.append(
+            dict(
+                label=label,
+                method="update",
+                args=[
+                    {"visible": visible},
+                    {"title": f"Utjecaj poruka: {label}"}
+                ]
+            )
+        )
+
+    # all
+    buttons.insert(
+        0,
+        dict(
+            label="Prikaži sve",
+            method="update",
+            args=[
+                {"visible": [True] * trace_index},
+                {"title": "Utjecaj poruka između sudionika"}
+            ]
+        )
+    )
+
+    fig.update_layout(
+
+        title="Utjecaj poruka između sudionika",
+
+        template="plotly_dark",
+
+        paper_bgcolor="#0f172a",
+        plot_bgcolor="#0f172a",
+
+        height=620,
+
+        updatemenus=[
+            dict(
+                type="dropdown",
+                direction="down",
+                x=1.02,
+                y=1.15,
+                showactive=True,
+                buttons=buttons
+            )
+        ],
+
+        xaxis_title="Vrijeme",
+        yaxis_title="Promjena emotional score-a",
+
+        hovermode="closest"
+    )
+
+    fig.add_hline(
+        y=0,
+        line_dash="dash",
+        line_color="rgba(255,255,255,0.35)"
+    )
+
+    fig.update_yaxes(
+        zeroline=False
     )
 
     return fig

@@ -403,6 +403,7 @@ def predict_ekman(preds: List[Dict]):
         "sadness": -0.55,
         "fear": -0.50,
         "joy": 0.75,
+        "surprise": 0.10,
         "neutral": 0.0
     }
 
