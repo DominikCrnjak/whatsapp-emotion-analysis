@@ -324,12 +324,11 @@ def predict_ekman(preds: List[Dict]):
 
     # Ekman valence
     ekman_val = {
-        "anger": -1.0,
-        "sadness": -0.85,
-        "fear": -0.90,
-        "neutral": 0.0,
-        "surprise": 0.20,
-        "joy": 1.0
+        "anger": -0.65,
+        "sadness": -0.55,
+        "fear": -0.50,
+        "joy": 0.75,
+        "neutral": 0.0
     }
 
     total = sum(mapped.values())
